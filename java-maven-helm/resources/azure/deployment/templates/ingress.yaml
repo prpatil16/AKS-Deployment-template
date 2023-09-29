@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+  name: {{ .Values.appName }}-ingress
+  namespace: {{ .Values.ingressNamespace }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    #nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+    #nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+spec:
+  tls:
+  - hosts:
+    {{- range .Values.ingress.hosts }}
+    - {{ .host }}
+    secretName: {{ $.Values.ingress.tls.secretName }}
+    {{- end }}
+  rules:
+  {{- range .Values.ingress.hosts }}
+  - host : {{ .host }}
+    http:
+      paths:
+      {{- range .paths }}
+      - path: {{ .path }}
+        pathType: {{ .pathType }}
+        backend:
+          service:
+            name: {{ $.Values.appName }}-service
+            port:
+              number: {{ .port }}
+      {{- end }}
+  {{- end }}

@@ -1,0 +1,231 @@
+@Library('CDlib@master') _
+pipeline {
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '20'))
+        durabilityHint 'PERFORMANCE_OPTIMIZED'
+    }
+
+    environment {
+		AZURE_TEMPLATE_HOME = './resources/azure'
+		HOME = "${env.WORKSPACE}"
+		GIT_URL = 'Enter git url here'
+		// Jenkins credential ID of the SSH key Secret File
+		GIT_CREDS = 'app-ssh-key'
+		RELEASE_NAME_FORTIFY = 'app-service'
+    }
+
+	// Agent config for PRG or WEU datacenter
+    agent {
+        kubernetes {
+            cloud 'prod-prg'
+            inheritFrom 'jenkins-slave-prg'
+            customWorkspace "jobs/${env.JOB_NAME}/${env.BUILD_NUMBER}"
+            yamlFile  'jenkins/agent.yaml'
+        }
+    }
+
+	// Agent config for CBJ or SEA Datacenter
+	/*agent {
+        kubernetes {
+            cloud 'kubernetes'
+            inheritFrom 'openshift-cbj-custom-image'
+            customWorkspace "jobs/${env.JOB_NAME}/${env.BUILD_NUMBER}"
+            yamlFile  'jenkins/agent.yaml'
+        }
+    }*/
+
+    parameters {
+        string(name: 'branchName', defaultValue: 'feature/wave1c', description: 'Please select the brach that will be built. <b>Default:</b> feature/wave1c')
+        choice(name: 'environment', choices: ['dev', 'test','stg'], description: 'Please select the environment. <b>Default:</b> development')
+        booleanParam(name: 'skipCodeScan', defaultValue: false, description: 'Should skip depdendency check, Sonar and Fortify scan? <b>Default:</b> true')
+		booleanParam(name: 'skipBuild', defaultValue: false, description: 'Should skip mvn build and docker img ? <b>Default:</b> false')
+    }
+    
+    stages {		
+		stage('SCM Checkout') {
+			steps {
+                script {
+					println "${GIT_COMMIT}"
+					// remove and tagVersion as input parameter to support tag based deployment
+					tagVersion=""
+					if ("" != "${tagVersion}") {
+						checkout scm: [$class: 'GitSCM', userRemoteConfigs:  [[url: "${GIT_URL}", credentialsId: "${GIT_CREDS}"]], branches: [[name: "${tagVersion}"]]], poll: false
+					} else {
+						git branch: "${branchName}", credentialsId: "${GIT_CREDS}", url: "${GIT_URL}"
+					}
+				}
+			}
+		}
+		
+		stage('Initialize job variables') {			
+			steps {
+                script {
+					
+					config = readYaml(file: AZURE_TEMPLATE_HOME + '/' + params.environment +'-values.yaml')	
+					env.AKS_APP_NAME = config.appName
+					env.AKS_APP_VERSION = config.version
+					env.AKS_NAMESPACE = config.namespace
+					
+					env.AZURE_ACR = config.image.registry
+					env.IMG_NAME = config.image.name
+					
+					env.AZURE_SP = config.azureSP
+					env.AKS_CLUSTER = config.aksCluster
+					env.AKS_RG = config.aksClusterRG
+					
+					if(null != config.environmentSecrets) {
+					
+						// get secret keys to look up jenkins credentials
+						def envSecretKeys = config.environmentSecrets.keySet()
+						def envSecretValues = getJenkinsSecrets(envSecretKeys, false)
+					   				   
+						// append generated env secrets back to config and overwrite to yaml file
+						if(null != config.environmentVariables) {
+							config.environmentVariables.putAll(envSecretValues)
+						} else {
+							config.put('environmentVariables', envSecretValues)
+						}
+						writeYaml overwrite:true, file: AZURE_TEMPLATE_HOME + '/' + params.environment + '-values.yaml', data: config
+					}
+				}
+			}
+		}
+
+        stage("Run build") {
+			
+			when {
+				// disabled due to JDK compability issues 
+				expression { false == params.skipBuild }
+			}
+            steps {
+                script {
+                    container('maven') {
+                        sh 'mvn -s configuration/settings.xml clean package -B -Dmaven.test.skip -Ddependency-check.skip=true'
+                    }
+                }
+            }
+        }
+
+        stage('Build docker & Push') {
+			when {
+				// disabled due to JDK compability issues 
+				expression { false == params.skipBuild }
+			}
+            steps {
+                script {
+                    docker.withRegistry("", "") {
+						withCredentials([azureServicePrincipal(AZURE_SP)]) {
+						
+						sh '''
+						docker login ${AZURE_ACR} -u ${AZURE_CLIENT_ID} -p ${AZURE_CLIENT_SECRET}
+                        docker build -t ${AZURE_ACR}${IMG_NAME} .
+						docker push ${AZURE_ACR}${IMG_NAME}
+						'''
+						}
+                        
+                    }
+                }
+            }
+        }
+		
+		// Stage to deploy application, svc and ingress to AKS
+		stage('Deploy Application') {
+            steps {
+				script {
+					container('helm'){
+						withCredentials([azureServicePrincipal(AZURE_SP)]) {
+						sh '''
+							cd $AZURE_TEMPLATE_HOME
+							
+							az login --service-principal -t "${AZURE_TENANT_ID}" -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}"
+                    
+							az aks get-credentials --resource-group ${AKS_RG} --name ${AKS_CLUSTER}
+						
+							kubelogin convert-kubeconfig -l spn
+												
+							export AAD_SERVICE_PRINCIPAL_CLIENT_ID="${AZURE_CLIENT_ID}"
+							export AAD_SERVICE_PRINCIPAL_CLIENT_SECRET="${AZURE_CLIENT_SECRET}"
+						
+							helm upgrade --install ${AKS_APP_NAME} deployment/ -f ./${environment}-values.yaml --namespace=${AKS_NAMESPACE} --history-max 3
+						'''
+						}
+					}
+                }
+            }
+        }
+    }
+	post {
+		always {
+            script {
+				// save OWASP Dependency check results for CVSS Critical (9-10)
+				publishHTML target: [ 	allowMissing: true,
+										alwaysLinkToLastBuild: false,
+										keepAll: true,
+										reportDir: "./target",
+										reportFiles: 'dependency-check-report.html',
+										reportName: 'OWASPDependencyCheckReport'
+									]
+
+				publishHTML target: [ 	allowMissing: true,
+										alwaysLinkToLastBuild: false,
+										keepAll: true,
+										reportDir: "./",
+										reportFiles: 'fortify_${env.RELEASE_NAME_FORTIFY}.pdf',
+										reportName: 'fortify_report.pdf'
+									]
+				
+            }
+        }
+		/*
+		email notification options
+		failure {
+            emailext body: 'Check console output at $BUILD_URL to view the results. \n\n ${CHANGES} \n\n ------ \n${BUILD_LOG, maxLines=100, escapeHtml=false}', 
+                    to: "${EMAIL_TO}", 
+                    subject: 'Build failed in Jenkins: $PROJECT_NAME - #$BUILD_NUMBER'
+        }
+        unstable {
+            emailext body: 'Check console output at $BUILD_URL to view the results. \n\n ${CHANGES} \n\n -------------------------------------------------- \n${BUILD_LOG, maxLines=100, escapeHtml=false}', 
+                    to: "${EMAIL_TO}", 
+                    subject: 'Unstable build in Jenkins: $PROJECT_NAME - #$BUILD_NUMBER'
+        }
+        changed {
+            emailext body: 'Check console output at $BUILD_URL to view the results.', 
+                    to: "${EMAIL_TO}", 
+                    subject: 'Jenkins build is back to normal: $PROJECT_NAME - #$BUILD_NUMBER'
+        }
+        success {
+            emailext body: 'Demo job successful at $BUILD_URL to view the results.', 
+                    to: "${EMAIL_TO}", 
+                    subject: 'Build Successful in Jenkins: $PROJECT_NAME - #$BUILD_NUMBER'
+        }*/
+	}
+}
+
+///////////////////
+// Helper method
+///////////////////
+def getJenkinsSecrets(secretKeys, springConfig){
+
+	// declare new secret map to store jenkins credentials 
+	def newSecretValues = [:]
+				   
+	// iterate secret keys and get jenkins values 
+	for(String secretId:secretKeys) {
+		withCredentials([usernamePassword( credentialsId: secretId, usernameVariable: 'KEY', passwordVariable: 'VAL')]) {
+							   
+			// store key values to new secret map
+			if(springConfig){ 
+				keyName="${KEY}"
+				keyName = keyName.replaceAll("\\.","_")
+				keyName = keyName.replaceAll("-","_")
+				newSecretValues.put(keyName, "${VAL}")
+			} else {
+				newSecretValues.put("${KEY}", "${VAL}")
+			}
+			println newSecretValues
+		}
+	}
+		
+	return newSecretValues
+}  

@@ -1,0 +1,176 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.appName }}
+  namespace: {{ .Values.namespace }}
+spec:
+  {{- if not .Values.autoScaling.enabled }}
+  replicas: {{ .Values.autoScaling.defaultReplicas | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ .Values.appName }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        ## config to auto restart pods for each deployment
+        rollme: {{ randAlphaNum 5 | quote }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}  
+      labels:
+        app: {{ .Values.appName }}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: {{ .Values.image.secretName }}      
+      {{- if .Values.container }}
+      containers:
+        - name: {{ .Values.appName }}
+          securityContext:
+            privileged: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsUser: 101
+            runAsNonRoot: true
+          image: "{{ .Values.image.registry }}{{ .Values.image.name }}:{{ .Values.version }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy}}
+          ##command: ["sleep","3000"]
+          {{- if .Values.autoScaling.enabled }}
+          resources:
+            requests:
+              cpu: {{ .Values.autoScaling.resources.requests.cpu }}
+              memory: {{ .Values.autoScaling.resources.requests.memory }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.container.port }}
+              protocol: TCP
+          {{- if .Values.container.livenessProbe }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.container.livenessProbe.path }}
+              port: {{ .Values.container.livenessProbe.port }}
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.container.livenessProbe.initialDelaySeconds | default 180 }}
+            periodSeconds: {{ .Values.container.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.container.livenessProbe.timeoutSeconds | default 5 }}
+            failureThreshold: {{ .Values.container.livenessProbe.failureThreshold | default 3 }}
+          {{- end }}
+          {{- if .Values.container.readinessProbe }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.container.readinessProbe.path }}
+              port: {{ .Values.container.readinessProbe.port }}
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.container.readinessProbe.initialDelaySeconds | default 180 }}
+            periodSeconds: {{ .Values.container.readinessProbe.periodSeconds | default 10 }}
+            successThreshold: {{ .Values.container.readinessProbe.successThreshold | default 3 }}
+          {{- end }}
+          volumeMounts:
+            {{- range .Values.container.emptyVolumes }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+            {{- end }}
+            {{- range .Values.container.configVolumes }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+              subPath: {{ .path }}
+            {{- end }}
+            {{- range .Values.container.secretVolumes }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}            
+            {{- end }}
+            {{- range .Values.container.fileShareVolumes }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+              subPath: {{ .subPath }}
+            {{- end }}
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          env:
+            {{- if .Values.environmentVariables }}
+            {{- range $keys, $values := .Values.environmentVariables }}
+            - name: {{ $keys }}
+              value: {{ $values | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.envFromConfigMap }}
+            {{- range .Values.envFromConfigMap }}
+            - name: {{ .envKey }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .configMap }}
+                  key: {{ .configMapKey }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.envFromSecret }}
+            {{- range .Values.envFromSecret }}
+            - name: {{ .envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- end }} 
+        {{- end }}
+      volumes:
+      {{- range .Values.container.emptyVolumes }}
+      - name: {{ .name }}
+        emptyDir: {}
+      {{- end }}
+      {{- range .Values.container.configVolumes }}
+      - name: {{ .name }}
+        configMap:
+          name: {{ .configMapName }}
+          items:
+            - key: {{ .key }}
+              path: {{ .path }}
+      {{- end }}
+      {{- range .Values.container.secretVolumes }}
+      - name: {{ .name }}
+        secret:
+          secretName: {{ .secret.secretName }}
+      {{- end }}
+      {{- range .Values.container.fileShareVolumes }}
+      - name: {{ .name }}
+        csi:
+          driver: file.csi.azure.com
+          readOnly: false
+          volumeAttributes:
+            secretName: {{ .storageSecretName }}
+            shareName: {{ .fileShareName }}/{{ .subPath }}
+            mountOptions: "dir_mode=0777,file_mode=0777,cache=strict,actimeo=30"
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+      {{- toYaml . | nindent 8}}
+      {{- end}}
+      {{- with .Values.tolerations }}
+      tolerations:
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{- if .Values.autoScaling.enabled }}
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Values.application.name }}-hpa
+spec:
+  maxReplicas: {{ .Values.autoScaling.maxReplicas }}
+  minReplicas: {{ .Values.autoScaling.minReplicas }}
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Values.application.name }}
+  targetCPUUtilizationPercentage: {{ .Values.autoScaling.cpuThreshold }}
+{{- end }}
+---

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.1.0 http://maven.apache.org/xsd/settings-1.1.0.xsd" xmlns="http://maven.apache.org/SETTINGS/1.1.0"
+		  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<localRepository>./m2/repo/</localRepository>
+    <servers>
+		<server>
+			<username>LDAPID-App-Service-Account</username>
+			<password>ArtifactoryEncodedPassword</password>
+			<id>central</id>
+		</server>
+		<server>
+			<username>LDAPID-App-Service-Account</username>
+			<password>ArtifactoryEncodedPassword</password>
+			<!-- Supply password as runtime arg -Dmaven.password=Password@1
+			<password>${maven.password}</password-->
+			<id>snapshots</id>
+		</server>
+	</servers>
+	<profiles>
+		<profile>
+			<repositories>
+				<repository>
+					<snapshots>
+						<enabled>false</enabled>
+					</snapshots>
+					<id>central</id>
+					<name>maven-release</name>
+					<url>provide artifactory details here</url>
+				</repository>
+				<repository>
+					<snapshots />
+					<id>snapshots</id>
+					<name>maven-snapshot</name>
+					<url>provide artifactory details here</url>
+				</repository>
+			</repositories>
+			<pluginRepositories>
+				<pluginRepository>
+					<snapshots>
+						<enabled>false</enabled>
+					</snapshots>
+					<id>central</id>
+					<name>maven-release</name>
+					<url>provide artifactory details here</url>
+				</pluginRepository>
+				<pluginRepository>
+					<snapshots />
+					<id>snapshots</id>
+					<name>maven-snapshot</name>
+					<url>provide artifactory details here</url>
+				</pluginRepository>
+			</pluginRepositories>
+			<id>artifactory</id>
+		</profile>
+	</profiles>
+	<activeProfiles>
+		<activeProfile>artifactory</activeProfile>
+	</activeProfiles>
+	
+</settings>

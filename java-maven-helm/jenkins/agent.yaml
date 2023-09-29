@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: maven
+      image: provide artifactory details here/maven:3.6-jdk-11
+      tty: true
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 2
+          memory: 4Gi
+      workingDir: '/var/lib/jenkins'
+      volumeMounts:
+        - mountPath: "/data"
+          name: "volume-0"
+        - mountPath: "/.m2"
+          name: "volume-1"
+    - name: helm
+      image: provide artifactory details here/cdlib/helm
+      tty: true
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: 50m
+          memory: 100Mi
+        limits:
+          cpu: 400m
+          memory: 512Mi
+      imagePullPolicy: Always
+      workingDir: "/var/lib/jenkins"
+    - name: fortify
+      image: provide artifactory details here/fortify/fortify-cloudscan-client:latest
+      tty: true
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: 50m
+          memory: 100Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+      imagePullPolicy: Always
+      workingDir: "/var/lib/jenkins"
+      volumeMounts:
+        - mountPath: "/.fortify"
+          name: "volume-1"

@@ -1,0 +1,36 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.appName }}-service
+  namespace: {{ .Values.namespace }}
+spec:
+  type: {{ .Values.applicationService.type }}
+  ports:
+    - name: app-port
+      protocol: {{ .Values.applicationService.protocol }}
+      port: {{ .Values.applicationService.port }}
+      targetPort: {{ .Values.applicationService.targetPort }}
+  selector:
+    app: {{ .Values.appName }}
+---
+{{- if .Values.applicationService.hazelcastEnabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.application.name }}-service-headless
+  namespace: {{ .Values.application.namespace }}
+spec:
+  clusterIP: None
+  clusterIPs:
+    - None
+  type: {{ .Values.applicationService.type }}
+  ports:
+    - name: hazelcast
+      protocol: {{ .Values.applicationService.protocol }}
+      port: {{ .Values.applicationService.hazelcastPort }}
+      targetPort: {{ .Values.applicationService.hazelcastPort }}
+  selector:
+    app: {{ .Values.application.label }}
+{{- end }}
+---

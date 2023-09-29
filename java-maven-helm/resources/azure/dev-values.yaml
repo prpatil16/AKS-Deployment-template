@@ -1,0 +1,136 @@
+environment: dev
+appName: provide app name
+namespace: provide namespace
+version: latest
+
+## Azure AKS details
+azureSP: Provide Service Principle
+aksCluster: Cluster Name
+aksClusterRG:Provide resource group name
+
+# Application Service
+applicationService:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+  protocol: TCP
+
+# Service to bridge to Application Service
+bridgingService:
+  type: ExternalName
+
+autoScaling:
+  # Define default replicas when autoscaling is disabled
+  defaultReplicas: 1
+  
+  #enable below values only for UAT or PROD where autoscaling is needed. 
+  enabled: false
+  #enabled: true
+  #minReplicas: 1
+  #maxReplicas: 6
+  #cpuThreshold: 80
+  #resources:
+  #  requests:
+  #    memory: "2Gi"
+  #    cpu: "1"
+
+image:
+  registry: itsacrexpbi.azurecr.io
+  name: /app/gateway-dev
+  pullPolicy: Always
+  secretName: app-img-secret
+
+container:
+  port: 8080
+  emptyVolumes:
+    - name: tmp-volume
+      mountPath: /tmp
+  configVolumes:
+  - name: gateway-config
+    configMapName: gateway-config
+    key: gateway.yml
+    path: gateway.yml
+    mountPath: /config/gateway.yml
+  - name: application-config
+    configMapName: application-config
+    key: application.yml
+    path: application.yml
+    mountPath: /config/application.yml
+  secretVolumes:
+  - name: wallet-config
+    secret:
+      secretName: oci-wallet
+    mountPath: /appdb
+  fileShareVolumes:
+    - name: job-logs
+      fileShareName: loader-e2e
+      subPath: logs
+      storageSecretName: app-storage-secret
+      mountPath: /appl/batch/loader/logs
+  readinessProbe:
+    path: /actuator/health 
+    port: 8080
+  livenessProbe:
+    path: /actuator/health 
+    port: 8080
+
+## static environment variables
+environmentVariables:
+  SPRING_PROFILES_ACTIVE: kubernetes
+
+## secret environment variables referenced from 
+## Jenkins Credentials store
+environmentSecrets:
+  DB_PASSWORD: "will be pulled from Jenkins"
+  
+## configuration from config map injected as additional env variable
+envFromConfigMap:
+  - configMap: mysql-config
+    configMapKey: MYSQL_PASSWORD
+    envKey: MYSQL_PASSWORD
+  - configMap: mysql-config
+    configMapKey: MYSQL_USERNAME
+    envKey: MYSQL_USERNAME
+  - configMap: mysql-config
+    configMapKey: MYSQL_URL
+    envKey: MYSQL_URL
+  - configMap: gateway-config
+    configMapKey: REPORT_FILE_NAMES
+    envKey: reportFileNames
+
+## Configuration from a aks secret injected as env variable
+envFromSecret:
+  - envKey: MYSQL_PASSWORD
+    secretName: mysql-config
+    secretKey: mysql.json
+    
+#external:
+ingress:
+  hosts:
+    - host: "gateway.app-dev.infosys.com"
+      paths:
+        ## path based custom routing if needed
+        - path: /api
+          pathType: Prefix
+          port: 8080
+          service: app-api-service
+        ## default ingress routing for the app
+        - path: /
+          pathType: Prefix
+          port: 8080
+          service: app-service
+  tls:
+    secretName: app-tls-secret-np
+
+podAnnotations:
+    ## index definition is need for PODs with multiple containers
+    ## to facilitate splunk index based search
+    collectord.io/logs-index: kubernetes
+    collectord.io/stderr-logs-index: kubernetes 
+    collectord.io/stdout-logs-index: kubernetes
+    #collectord.io/logs-output set tp devnull to ignore or splunk to capture
+    collectord.io/logs-output: splunk
+    ## Set logs volume to fwd logs from log files to splunk
+    collectord.io/volume.1-logs-name: log-volume
+    ## Define log file name patter to be filtered if needed
+    collectord.io/volume.1-logs-glob: '*.log'
